@@ -74,6 +74,7 @@ class Device:
         self.exit_temperature = None
         self.fumes_temperature = None
         self.pellet_quantity = None
+        self.power_level = None
         self.status = None
         self.mode = None
         self.topic_to_func = None
@@ -99,16 +100,18 @@ class Device:
             'exit_temperature': self.exit_temperature,
             'fumes_temperature': self.fumes_temperature,
             'pellet_quantity': self.pellet_quantity,
+            'power_level': self.power_level,
             'status': self.status,
             'mode': self.mode
         })
 
     def update_state(self, data):
         self.target_temperature = data["SETP"]
-        self.room_temperature = data["T1"]
+        self.room_temperature = data["T5"]
         self.exit_temperature = data["T2"]
         self.fumes_temperature = data["T3"]
         self.pellet_quantity = float(data["PQT"])
+        self.power_level = data["PWR"]
         self.status = self.status_names.get(data["LSTATUS"], "Off")
         self.mode = "heat" if data["LSTATUS"] in self.is_heating_statuses else "off"
         if time.time() - self.last_update < self.house.config.offline_timeout:
@@ -126,17 +129,21 @@ class Device:
             "current_temperature_topic": self.house.config.mqtt_state_prefix + "/" + self.device_id + "/temp",
             "mode_state_topic": self.house.config.mqtt_state_prefix + "/" + self.device_id + "/mode",
             "temperature_state_topic": self.house.config.mqtt_state_prefix + "/" + self.device_id + "/target_temp",
+            "hold_state_topic": self.house.config.mqtt_state_prefix + "/" + self.device_id + "/power_level",
             "availability_topic": self.house.config.mqtt_state_prefix + "/" + self.device_id + "/availability",
 
             "mode_command_topic": self.house.config.mqtt_command_prefix + "/" + self.device_id + "/mode",
             "temperature_command_topic": self.house.config.mqtt_command_prefix + "/" + self.device_id + "/target_temp",
-
+            "hold_command_topic": self.house.config.mqtt_command_prefix + "/" + self.device_id + "/power_level",
+            
+            "hold_modes": ["1", "2", "3", "4", "5"],
             "modes": ["off", "heat"],
             "device": {"identifiers": self.device_id, "manufacturer": "Palazzetti"}
         }
         self.topic_to_func = {
             self.climate_mqtt_config["mode_command_topic"]: self.send_mode,
             self.climate_mqtt_config["temperature_command_topic"]: self.send_target_temperature,
+            self.climate_mqtt_config["hold_command_topic"]: self.send_power_level,
         }
         self.status_sensor_discovery_topic = self.house.config.mqtt_discovery_prefix + "/sensor/" + self.device_id + "_status/config"
         self.status_sensor_mqtt_config = {
@@ -169,6 +176,7 @@ class Device:
 
         mqtt_client.subscribe(self.climate_mqtt_config["mode_command_topic"], 0)
         mqtt_client.subscribe(self.climate_mqtt_config["temperature_command_topic"], 0)
+        mqtt_client.subscribe(self.climate_mqtt_config["hold_command_topic"], 0)
 
         if self.house.config.mqtt_discovery:
             retain = self.house.config.mqtt_config_retain
@@ -188,6 +196,7 @@ class Device:
 
         mqtt_client.unsubscribe(self.climate_mqtt_config["mode_command_topic"], 0)
         mqtt_client.unsubscribe(self.climate_mqtt_config["temperature_command_topic"], 0)
+        mqtt_client.unsubscribe(self.climate_mqtt_config["hold_command_topic"], 0)
 
         if self.house.config.mqtt_discovery:
             retain = self.house.config.mqtt_config_retain
@@ -207,7 +216,10 @@ class Device:
 
     def send_target_temperature(self, target_temperature):
         self.house.palazzetti.set_target_temperature(self.hostname, target_temperature)
-
+        
+    def send_power_level(self, power_level):
+        self.house.palazzetti.set_power_level(self.hostname, power_level)
+        
     def publish_state(self):
         mqtt_client = self.house.mqtt_client
         if mqtt_client is not None:
@@ -218,6 +230,8 @@ class Device:
                                 self.mode, retain=retain)
             mqtt_client.publish(self.climate_mqtt_config["temperature_state_topic"],
                                 self.target_temperature, retain=retain)
+            mqtt_client.publish(self.climate_mqtt_config["hold_state_topic"],
+                                self.power_level, retain=retain)
             mqtt_client.publish(self.climate_mqtt_config["availability_topic"],
                                 self.availability, retain=retain)
             mqtt_client.publish(self.status_sensor_mqtt_config["state_topic"],
@@ -322,6 +336,9 @@ class PalazzettiAdapter:
 
     def set_target_temperature(self, hostname, target_temperature):
         return self.send_command(hostname, "SET SETP {}".format(target_temperature))
+    
+    def set_power_level(self, hostname, power_level):
+        return self.send_command(hostname, "SET POWR {}".format(power_level))
 
     def last_successful_response_age(self):
         return time.time() - self.last_successful_response
